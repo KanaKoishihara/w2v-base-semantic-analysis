@@ -1,1 +1,264 @@
+#!/usr/bin/python3
+
+from gensim.models import word2vec
+import logging
+import os
+import tensorflow as tf
+import numpy as np
+import pickle
+import itertools
+import pandas as pd
+
+logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO, filename='test.log')
+tf.compat.v1.disable_eager_execution()
+
+def list_file(dp):
+  fp_list = []
+  for fp in os.listdir(dp):
+    fp_list.append(os.path.join(dp, fp))
+  fp_list.sort()
+  return fp_list
+
+def next_batch(num, data, labels):
+  '''
+  バッチ処理関数
+  https://stackoverflow.com/questions/40994583/how-to-implement-tensorflows-next-batch-for-own-data/40995666
+  Return a total of `num` random samples and labels. 
+  '''
+  idx = np.arange(0 , len(data))
+  np.random.shuffle(idx)
+  idx = idx[:num]
+  data_shuffle = [data[ i] for i in idx]
+  labels_shuffle = [labels[ i] for i in idx]
+
+  return np.asarray(data_shuffle), np.asarray(labels_shuffle)
+
+def learn_linear_transformation(source_vectors, target_vectors):
+  # プレースホルダーの定義
+  #source_ph = tf.compat.v1.placeholder(tf.float32, shape=[None, 10])
+  #target_ph = tf.compat.v1.placeholder(tf.float32, shape=[None, 10])
+  #mao修正
+  # ベクトル空間次元数
+  _, dvec_map_to = target_vectors.shape
+  _, dvec_map_from = source_vectors.shape
+  source_ph = tf.compat.v1.placeholder(tf.float32, shape=[None, dvec_map_from])
+  target_ph = tf.compat.v1.placeholder(tf.float32, shape=[None, dvec_map_to])
+
+  # 変換行列の定義
+  #W = tf.Variable(tf.random.normal([10, 10]))
+  #mao修正
+  W = tf.Variable(tf.random.normal([dvec_map_from, dvec_map_to]))
+
+  # 変換後のベクトル
+  transformed_vectors = tf.matmul(source_ph, W)
+
+  # 損失関数の定義（変換後のベクトルと目標ベクトルの間の二乗誤差）
+  loss = tf.reduce_mean(tf.square(transformed_vectors - target_ph))
+
+  # オプティマイザの定義
+  optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=0.001)
+  train_op = optimizer.minimize(loss)
+
+  # セッションの設定
+  init = tf.compat.v1.global_variables_initializer()
+
+  with tf.compat.v1.Session() as sess:
+    sess.run(init)
+    #for epoch in range(1000000000):  # エポック数は1000から1000000000に調整
+    for epoch in range(10000000):  # エポック数は1000から1000000000に調整
+      _, loss_value = sess.run([train_op, loss], feed_dict={source_ph: source_vectors, target_ph: target_vectors})
+      if epoch % 100 == 0:   # 100から10に変更
+        print(f"Epoch: {epoch}, Loss: {loss_value}")
+
+    # 訓練後の変換行列の取得
+    W_val = sess.run(W)
+
+  return W_val
+
+def savepickle(lst, fp):
+  with open(fp, 'wb') as f:
+    pickle.dump(lst, f)
+
+def loadpickle(fp):
+  with open(fp, 'rb') as f:
+    return pickle.load(f)
+
+def cos_sim(v1, v2):
+    return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+
+def main():
+  #src_txt_list = ['sample_1.txt', 'sample_2.txt', 'sample_3.txt']
+  dp_tgt_vec = 'tgt_vec'
+  dp_tgt_bin = 'tgt_bin'
+  fn_tgt_vec = 'vec_enwiki-20160601_w2v_min50_win10_dim300_skipgram_ns5.txt'
+  dp_src_txt = 'src_txt_30'
+  dp_src_bin = 'src_bin'
+  dp_pickle = 'pickle'
+  dp_cossim = 'cossim'
+
+  cos_sim_result_list = []
+
+  #テキストを用いた学習
+  src_txt_list = list_file(dp_src_txt)
+  for fp_txt in src_txt_list:
+    fn_txt = os.path.basename(fp_txt)
+    fn_bin = '{}.bin'.format(os.path.splitext(fn_txt)[0])
+    fp_bin = os.path.join(dp_src_bin, fn_bin)
+    logging.info('Start learning process for "{}"'.format(fn_txt))
+    if os.path.isfile(fp_bin):
+      logging.info('"{}" already exits. Skip learning "{}"'.format(fn_bin, fn_txt))
+    else:
+      logging.info('Start learning "{}"'.format(fn_txt))
+      corpus = word2vec.Text8Corpus(fp_txt)
+      model = word2vec.Word2Vec(corpus, min_count=1, vector_size=300) #min_count:n個以上の出現単語を対象とする、vector_size:次元数(wikiが300dimのため300指定)
+      model.wv.save_word2vec_format(fp_bin, binary=True)
+      logging.info('Finished learning "{}"'.format(fn_txt))
+
+  #2つの異なる空間にある同一の単語(例えばanalysis)について、一方の単語の値を他方の空間に線形変換し写像する
+  #key:軸となるcorpusでの単語、value:比較対象のcorpusでの単語
+  #軸:wikipedia、比較対象:各分野
+  #vocab_dicを変更したらpickleも再生成が必要
+  vocab_dic = {'the':'the', 'of':'of', 'and':'and', 'in':'in', 'to':'to', 'a':'a', 'with':'with', 'for':'for', 'al':'al', 'et':'et', 'that':'that', 'is':'is', 'was':'was', 'were':'were', 'as':'as', 'by':'by', 'on':'on', 'are':'are', 'this':'this', 'from':'from', 'be':'be', 'or':'or', 'at':'at', 'an':'an', 'we':'we', 'which':'which', 'not':'not', 'have':'have', 'between':'between', 'these':'these', 'it':'it', 'also':'also', 'can':'can', 'their':'their', 'has':'has', 'all':'all', 'used':'used', 'may':'may', 'been':'been', 'using':'using', 'more':'more', 'after':'after', 'other':'other', 'than':'than', 'two':'two', 'such':'such', 'group':'group', 'high':'high', 'each':'each', 'our':'our', 'one':'one', 'time':'time', 'both':'both', 'however':'however', 'but':'but', 'research':'research', 'during':'during', 'no':'no', 'could':'could', 'significant':'significant', 'into':'into', 'its':'its', 'l':'l', 'only':'only', 'when':'when', 'there':'there', 'higher':'higher', 'well':'well', 'they':'they', 'most':'most', 'number':'number', 'non':'non', 'those':'those', 'three':'three', 'had':'had', 'first':'first', 'while':'while', 'further':'further', 'through':'through', 'low':'low', 'some':'some', 'total':'total', 'within':'within', 'authors':'authors', 'under':'under', 'any':'any', 'among':'among', 'due':'due', 'positive':'positive', 'then':'then', 'therefore':'therefore', 'addition':'addition', 'age':'age', 'thus':'thus', 'will':'will', 'same':'same', 'lower':'lower', 'article':'article', 'similar':'similar', 'anti':'anti', 'up':'up', 'min':'min', 'years':'years', 'over':'over', 'several':'several', 'following':'following', 'water':'water', 'who':'who', 'previous':'previous', 'according':'according', 'would':'would', 'negative':'negative', 'did':'did', 'although':'although', 'if':'if', 'like':'like', 'new':'new', 'where':'where', 'about':'about', 'should':'should', 'because':'because', 'without':'without', 'out':'out', 'many':'many', 'children':'children', 'size':'size', 'might':'might', 'days':'days', 'self':'self', 'multiple':'multiple', 'single':'single', 'four':'four', 'being':'being', 'early':'early', 'vs':'vs', 'day':'day', 'large':'large', 'current':'current', 'small':'small', 'area':'area', 'long':'long', 'before':'before', 'individual':'individual', 'individuals':'individuals', 'various':'various', 'less':'less', 'per':'per', 'material':'material', 'whether':'whether', 'do':'do', 'against':'against', 'across':'across', 'how':'how', 'via':'via', 'surface':'surface', 'range':'range', 'example':'example', 'set':'set', 'possible':'possible', 'normal':'normal', 'second':'second', 'primary':'primary', 'absence':'absence', 'relative':'relative', 'furthermore':'furthermore', 'moreover':'moreover', 'temperature':'temperature', 'regions':'regions', 'order':'order', 'since':'since', 'average':'average', 'variables':'variables', 'recent':'recent', 'even':'even', 'main':'main', 'them':'them', 'region':'region', 'overall':'overall', 'available':'available', 'previously':'previously', 'common':'common', 'so':'so', 'future':'future', 'publisher':'publisher', 'above':'above', 'given':'given', 'likely':'likely', 'another':'another', 'ability':'ability', 'better':'better', 'parameters':'parameters', 'major':'major', 'left':'left', 'very':'very', 'frequency':'frequency', 'people':'people', 'university':'university', 'loss':'loss', 'author':'author', 'still':'still', 'pre':'pre', 'least':'least', 'months':'months', 'th':'th', 'medium':'medium', 'red':'red', 'mainly':'mainly', 'full':'full', 'often':'often', 'free':'free', 'times':'times', 'highly':'highly', 'right':'right', 'either':'either', 'weight':'weight', 'light':'light', 'year':'year', 'point':'point', 'five':'five', 'part':'part', 'whereas':'whereas', 'general':'general', 'field':'field', 'greater':'greater', 'version':'version', 'additional':'additional', 'end':'end', 'online':'online', 'final':'final', 'cross':'cross', 'green':'green', 'volume':'volume', 'finally':'finally', 'here':'here', 'domain':'domain', 'length':'length', 'does':'does', 'initial':'initial', 'short':'short', 'additionally':'additionally', 'original':'original', 'directly':'directly', 'central':'central', 'mass':'mass', 'weeks':'weeks', 'prior':'prior', 'whole':'whole', 'recently':'recently', 'availability':'availability', 'abundance':'abundance', 'what':'what', 'maximum':'maximum', 'larger':'larger', 'together':'together', 'strong':'strong', 'along':'along', 'lack':'lack', 'able':'able', 'third':'third', 'best':'best', 'below':'below', 'six':'six', 'points':'points', 'toward':'toward', 'www':'www', 'https':'https', 'highest':'highest', 'secondary':'secondary', 'variable':'variable', 'few':'few', 'added':'added', 'rather':'rather', 'old':'old', 'blue':'blue', 'pro':'pro', 'much':'much', 'center':'center', 'top':'top', 'upon':'upon', 'next':'next', 'us':'us', 'others':'others', 'articles':'articles', 'older':'older', 'similarly':'similarly', 'around':'around', 'down':'down', 'poor':'poor', 'temporal':'temporal', 'percentage':'percentage', 'org':'org', 'white':'white', 'numbers':'numbers', 'week':'week', 'members':'members', 'yet':'yet', 'last':'last', 'paper':'paper', 'positively':'positively', 'later':'later', 'daily':'daily', 'until':'until', 'meta':'meta', 'widely':'widely', 'solely':'solely', 'alone':'alone', 'cannot':'cannot', 'unique':'unique', 'every':'every', 'color':'color', 'multi':'multi', 'longer':'longer', 'must':'must', 'strongly':'strongly', 'usually':'usually', 'variety':'variety', 'thereby':'thereby', 'safety':'safety', 'middle':'middle', 'upper':'upper', 'off':'off', 'black':'black', 'commonly':'commonly', 'fully':'fully', 'throughout':'throughout', 'his':'his', 'her':'her', 'though':'though', 'half':'half', 're':'re', 'seven':'seven', 'negatively':'negatively', 'eight':'eight', 'far':'far', 'already':'already', 'past':'past', 'once':'once', 'smaller':'smaller', 'almost':'almost', 'little':'little', 'now':'now', 'inner':'inner', 'my':'my', 'slow':'slow', 'why':'why', 'largest':'largest', 'yellow':'yellow', 'north':'north', 'beyond':'beyond', 'possibly':'possibly', 'forward':'forward', 'whose':'whose', 'always':'always', 'lowest':'lowest', 'just':'just', 'accurate':'accurate', 'pairs':'pairs', 'back':'back', 'http':'http', 'you':'you', 'etc':'etc', 'entire':'entire', 'done':'done', 'partial':'partial', 'gray':'gray', 'bottom':'bottom', 'earlier':'earlier', 'downstream':'downstream', 'near':'near', 'curves':'curves', 'cold':'cold', 'briefly':'briefly', 'member':'member', 'likelihood':'likelihood', 'library':'library', 'sum':'sum', 'ones':'ones', 'examples':'examples', 'onto':'onto', 'depends':'depends', 'easily':'easily', 'she':'she', 'too':'too'}
+
+  #下記の組み合わせをオリジナルから変更→同一言語のため、逆でも結果に影響なし
+  #軸はwikipediaのためvocab_srcはkey、比較対象が各分野のためvocab_tgtはvalueがそれぞれ該当する
+  vocab_src = vocab_dic.keys()
+  vocab_tgt = vocab_dic.values()
+  #下記がオリジナルの組み合わせ
+  #vocab_tgt = vocab_dic.keys()
+  #vocab_src = vocab_dic.values()
+
+  logging.info('Start linear transformation process')
+
+  is_model_tgt_loaded = False
+  #高速化のためwikipediaのvector textをbinaryに変換する
+  fp_tgt_vec = os.path.join(dp_tgt_vec, fn_tgt_vec)
+  fn_tgt_bin = '{}.bin'.format(os.path.splitext(fn_tgt_vec)[0])
+  fp_tgt_bin = os.path.join(dp_tgt_bin, fn_tgt_bin)
+  #高速化のためbinに変換済みであれば変換処理を飛ばす
+  if os.path.isfile(fp_tgt_bin):
+    logging.info('"{}" already exists. Skip converting vector formatted text to binary file.'.format(fn_tgt_bin))
+  else:
+    logging.info('"{}" does not exists. Start converting vector formatted text to binary file.'.format(fn_tgt_bin))
+    model_tgt = word2vec.KeyedVectors.load_word2vec_format(fp_tgt_vec, binary=False)
+    vec_tgt = model_tgt[vocab_src]
+    model_tgt.save_word2vec_format(fp_tgt_bin, binary=True)
+    is_model_tgt_loaded = True
+
+  src_txt_list = list_file(dp_src_txt)
+  for i,fp_txt in enumerate(src_txt_list):
+    fn_txt = os.path.basename(fp_txt)
+    fn_bin = '{}.bin'.format(os.path.splitext(fn_txt)[0])
+    fp_bin = os.path.join(dp_src_bin, fn_bin)
+    fn_pickle = '{}.pickle'.format(os.path.splitext(fn_txt)[0])
+    fp_pickle = os.path.join(dp_pickle, fn_pickle)
+
+    #高速化のためpickleに変換済みであれば変換処理を飛ばす
+    if os.path.isfile(fp_pickle):
+      pass
+    else:
+      if not is_model_tgt_loaded:
+        logging.info('Loading "{}"'.format(fn_tgt_bin))
+        model_tgt = word2vec.KeyedVectors.load_word2vec_format(fp_tgt_bin, binary=True)
+        vec_tgt = model_tgt[vocab_src]
+        is_model_tgt_loaded = True
+
+      logging.info('({}/{}) Learning linear transformation "{}"'.format(i+1, len(src_txt_list), fn_bin))
+      model_src = word2vec.KeyedVectors.load_word2vec_format(fp_bin, binary=True)
+
+      try:
+        vec_src = model_src[vocab_tgt]
+        W = learn_linear_transformation(vec_src, vec_tgt)
+        savepickle(W, fp_pickle)
+      except KeyError as e:
+        logging.error('vocab_dic error: {} in "{}"'.format(e, fn_bin))
+
+
+  # 変換用行列を基に、ターゲット単語のベクトルを、元の行列から写像先へのベクトルへと変換する
+  analyse_list = ['figure','study','analysis','studies','results','model','based','research','effect','associated','compared','related','effects','observed','system','development','factors','function','models','process','work','method','performance','methods','factor','findings','target','figures','described','signaling','learning','considered','analyzed','case','structure','evidence','functional','analyses','impact','result','mechanisms','interaction','cognitive','standard','experimental','revealed','systems','features','ability','design','formation','regulation','mechanism','flow','derived','influence','condition','detected','developed','determined','association','comparison','form','effective','functions','processing','subjects','defined','corresponding','proposed','interactions','consistent','limited','exposure','understanding','measures','properties','affect','resulting','suggested','assessment','components','patterns','stimulation','sequences','context','determine','solution','inhibition','contributions','investigated','attention','suggesting','assessed','image','application','caused','generated','imaging','affected','combined','pattern','baseline','availability','contributed','intervention']
+
+  src_txt_list = list_file(dp_src_txt)
+  fp_bin_1_past = None
+  fp_bin_2_past = None
+  #pickleファイルで総当りの組み合わせを生成する
+  fp_combi_list = list(itertools.combinations(src_txt_list, 2))
+  for i, fp_combi in enumerate(fp_combi_list):
+    fn_txt_1 = os.path.basename(fp_combi[0])
+    fn_txt_2 = os.path.basename(fp_combi[1])
+    fn_bin_1 = '{}.bin'.format(os.path.splitext(fn_txt_1)[0])
+    fp_bin_1 = os.path.join(dp_src_bin, fn_bin_1)
+    fn_bin_2 = '{}.bin'.format(os.path.splitext(fn_txt_2)[0])
+    fp_bin_2 = os.path.join(dp_src_bin, fn_bin_2)
+    fn_pickle_1 = '{}.pickle'.format(os.path.splitext(fn_txt_1)[0])
+    fp_pickle_1 = os.path.join(dp_pickle, fn_pickle_1)
+    fn_pickle_2 = '{}.pickle'.format(os.path.splitext(fn_txt_2)[0])
+    fp_pickle_2 = os.path.join(dp_pickle, fn_pickle_2)
+    fn_cossim = '{}_vs_{}.pickle'.format(fn_txt_1, fn_txt_2)
+    fp_cossim = os.path.join(dp_cossim, fn_cossim)
+
+    logging.info('({}/{}) {} vs {}'.format(i+1, len(fp_combi_list), fn_txt_1, fn_txt_2))
+
+    if os.path.isfile(fp_cossim):
+      logging.info('"{}" already exists. Skip cos simulation.'.format(fn_cossim))
+      cos_sim_result_list.append(loadpickle(fp_cossim))
+    else:
+      if fp_bin_1 == fp_bin_1_past:
+        logging.info('"{}" already loaded. Skip loading.'.format(fn_bin_1))
+      else:
+        model_1 = word2vec.KeyedVectors.load_word2vec_format(fp_bin_1, binary=True)
+        fp_bin_1_past = fp_bin_1
+      if fp_bin_2 == fp_bin_2_past:
+        logging.info('"{}" already loaded. Skip loading.'.format(fn_bin_2))
+      else:
+        model_2 = word2vec.KeyedVectors.load_word2vec_format(fp_bin_2, binary=True)
+        fp_bin_2_past = fp_bin_2
+
+      try:
+        W_1 = loadpickle(fp_pickle_1)
+      except FileNotFoundError as e:
+        logging.error('"{}" not found. Skip'.format(fn_pickle_1))
+        continue
+      try:
+        W_2 = loadpickle(fp_pickle_2)
+      except FileNotFoundError as e:
+        logging.error('"{}" not found. Skip'.format(fn_pickle_2))
+        continue
+
+      try:
+        model_1_list = model_1[analyse_list]
+      except KeyError as e:
+        logging.error('analyse_list error: {} in "{}". Skip cos simulation.'.format(e, fp_bin_1))
+        continue
+      try:
+        model_2_list = model_2[analyse_list]
+      except KeyError as e:
+        logging.error('analyse_list error: {} in "{}". Skip cos simulation.'.format(e, fp_bin_2))
+        continue
+
+      model_1_list2 = [np.dot(i,W_1) for i in model_1_list]
+      model_2_list2 = [np.dot(i,W_2) for i in model_2_list]
+
+      savepickle(model_1_list2, os.path.join('pickle_after_trans', fn_pickle_1))
+      savepickle(model_2_list2, os.path.join('pickle_after_trans', fn_pickle_2))
+
+      #コサイン類似度の計算
+      cos_sim_list = []
+      for i, v in zip(model_1_list2, model_2_list2):
+        cos_sim_list.append(cos_sim(i,v))
+      cos_sim_list.insert(0, '{} vs {}'.format(fn_txt_1, fn_txt_2))
+      cos_sim_result_list.append(cos_sim_list)
+      savepickle(cos_sim_list, fp_cossim)
+
+  header = analyse_list
+  header.insert(0, 'Source')
+  cos_sim_result_list.insert(0, header)
+
+  df = pd.DataFrame(cos_sim_result_list)
+  #df.astype('float')
+  print(df)
+  df.to_csv('cossim.csv')
+
+if __name__ == '__main__':
+  main()
+
 
